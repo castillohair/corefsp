@@ -10,7 +10,7 @@ Download or clone the repo and use ``python setup.py install``.
 
 The following code loads a pretrained predictor and generates 100 sequences to maximize its output.
 
-```
+```python
 import tensorflow as tf
 from tensorflow.keras import models
 
