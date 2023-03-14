@@ -33,6 +33,51 @@ class LossHistory(tf.keras.callbacks.Callback):
         self.target_loss.append(logs.get('target_loss'))
         self.entropy_loss.append(logs.get('entropy_loss'))
 
+class SequenceRecorder(tf.keras.callbacks.Callback):
+    def __init__(self, loss_model, seq_filepath, batches):
+        super(tf.keras.callbacks.Callback, self).__init__()
+        self.seq_filepath = seq_filepath
+        self.batches = batches
+
+        # Make generator model out of loss model
+        seq_output = loss_model.get_layer("pwm_sample").output
+        pred_output = loss_model.get_layer("target").input
+        self.generator_model = models.Model(
+            inputs=loss_model.input,
+            outputs=[seq_output, pred_output]
+        )
+
+        # Clear destination file
+        open(self.seq_filepath, 'w').close()
+        
+        # Store initial conditions
+        self._store_sequences(-1)
+
+    def _encode_seq(self, seqs_onehot):
+        seqs = []
+        for seq_onehot in seqs_onehot:
+            seq = [['A', 'C', 'G', 'T'][np.where(n == 1)[0][0]] for n in seq_onehot]
+            seq = ''.join(seq)
+            seqs.append(seq)
+        return seqs
+
+    def _store_sequences(self, batch):
+        # Extract sequences from model
+        seq_vals, pred_vals = self.generator_model.predict([[0]])
+        seqs = self._encode_seq(seq_vals)
+        # Add sequences to file
+        with open(self.seq_filepath, "a") as f:
+            f.write('\n'.join([f"{batch+1}\t{s}" for s in seqs]) + '\n')
+        return
+
+    def on_batch_end(self, batch, logs=None):
+        if isinstance(self.batches, int):
+            if (batch + 1) % self.batches == 0:
+                self._store_sequences(batch)
+        else:
+            if (batch + 1) in self.batches:
+                self._store_sequences(batch)
+
 ########################
 # Functions for sampling
 ########################
@@ -68,10 +113,13 @@ def design_seqs(
         seq_length,
         n_seqs=1,
         target_weight=1,
+        entropy_weight=1,
         learning_rate=0.1,
         n_iter_min=25,
         n_iter_max=2000,
         min_delta_loss_stop=1e-4,
+        seq_record_filename=None,
+        seq_record_batches=100,
     ):
     """
     TODO: docstring
@@ -166,7 +214,7 @@ def design_seqs(
         optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
         loss={
             'target': get_weighted_loss(loss_coeff=target_weight),
-            'entropy': get_weighted_loss(loss_coeff=1),
+            'entropy': get_weighted_loss(loss_coeff=entropy_weight),
         }
     )
 
@@ -179,6 +227,10 @@ def design_seqs(
     # )
     loss_history_callback = LossHistory()
     callbacks = [loss_history_callback]
+
+    if seq_record_filename is not None:
+        seq_recorder_callback = SequenceRecorder(loss_model, seq_record_filename, seq_record_batches)
+        callbacks.append(seq_recorder_callback)
 
     # Fit
     _ = loss_model.fit(
