@@ -23,6 +23,7 @@ class LossHistory(tf.keras.callbacks.Callback):
     def _reset_history(self):
         self.loss = []
         self.target_loss = []
+        self.pwm_loss = []
         self.entropy_loss = []
 
     def on_train_begin(self, logs=None):
@@ -31,6 +32,7 @@ class LossHistory(tf.keras.callbacks.Callback):
     def on_batch_end(self, batch, logs=None):
         self.loss.append(logs.get('loss'))
         self.target_loss.append(logs.get('target_loss'))
+        self.pwm_loss.append(logs.get('pwm_loss'))
         self.entropy_loss.append(logs.get('entropy_loss'))
 
 class SequenceRecorder(tf.keras.callbacks.Callback):
@@ -113,11 +115,11 @@ def design_seqs(
         seq_length,
         n_seqs=1,
         target_weight=1,
+        pwm_loss_func=None,
+        pwm_weight=1,
         entropy_weight=1,
         learning_rate=0.1,
-        n_iter_min=25,
         n_iter_max=2000,
-        min_delta_loss_stop=1e-4,
         seq_record_filename=None,
         seq_record_batches=100,
     ):
@@ -152,6 +154,7 @@ def design_seqs(
     )
     logits = logits_reshape(logits_flat)
 
+    # Instance normalization
     logits_instnorm = layers.BatchNormalization(
         axis=[0, 2],
         center=True,
@@ -181,6 +184,14 @@ def design_seqs(
     get_target_loss = layers.Lambda(lambda x: target_loss_func(x), name='target')
     target_loss = get_target_loss(sampled_pred)
 
+    # PWM loss
+    if pwm_loss_func is None:
+        def pwm_loss_func(pwm):
+            return pwm*0
+
+    get_pwm_loss = layers.Lambda(lambda x: pwm_loss_func(x), name='pwm')
+    pwm_loss = get_pwm_loss(pwm)
+
     # Entropy loss
     def entropy_loss_func(pwm):
         """Loss that returns the mean entropy of the batch"""
@@ -200,7 +211,7 @@ def design_seqs(
     # Define loss model
     loss_model = models.Model(
         [dummy_input],
-        [target_loss, entropy_loss],
+        [target_loss, pwm_loss, entropy_loss],
     )
 
     # Compile loss model
@@ -214,6 +225,7 @@ def design_seqs(
         optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
         loss={
             'target': get_weighted_loss(loss_coeff=target_weight),
+            'pwm': get_weighted_loss(loss_coeff=pwm_weight),
             'entropy': get_weighted_loss(loss_coeff=entropy_weight),
         }
     )
@@ -235,7 +247,7 @@ def design_seqs(
     # Fit
     _ = loss_model.fit(
         [0]*n_iter_max,
-        [[0, 0]]*n_iter_max,
+        [[0, 0, 0]]*n_iter_max,
         epochs=1,
         batch_size=1,
         callbacks=callbacks,
@@ -245,8 +257,18 @@ def design_seqs(
     train_history = {}
 
     train_history['loss'] = np.array(loss_history_callback.loss)
-    train_history['target_loss'] = np.array(loss_history_callback.target_loss) / target_weight
-    train_history['entropy_loss'] = np.array(loss_history_callback.entropy_loss)
+    if target_weight != 0:
+        train_history['target_loss'] = np.array(loss_history_callback.target_loss) / target_weight
+    else:
+        train_history['target_loss'] = np.array(loss_history_callback.target_loss)
+    if pwm_weight != 0:
+        train_history['pwm_loss'] = np.array(loss_history_callback.pwm_loss) / pwm_weight
+    else:
+        train_history['pwm_loss'] = np.array(loss_history_callback.pwm_loss)
+    if entropy_weight != 0:
+        train_history['entropy_loss'] = np.array(loss_history_callback.entropy_loss) / entropy_weight
+    else:
+        train_history['entropy_loss'] = np.array(loss_history_callback.entropy_loss)
 
     # Extract sampled sequences and model predictions
     seq_output = loss_model.get_layer("pwm_sample").output
