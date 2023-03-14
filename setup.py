@@ -85,7 +85,7 @@ setup(
     # https://packaging.python.org/en/latest/requirements.html
     install_requires=[
         'numpy>=1.22.1',
-        'tensorflow>=2.7.0',
+        'tensorflow>=2.4.0',
     ],
 
     # List additional groups of dependencies here (e.g. development
