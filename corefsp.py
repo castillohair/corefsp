@@ -122,6 +122,7 @@ def design_seqs(
         n_iter_max=2000,
         seq_record_filename=None,
         seq_record_batches=100,
+        init_seed=None,
     ):
     """
     TODO: docstring
@@ -140,10 +141,11 @@ def design_seqs(
 
     # Embeddings containing logits to be optimized
     # Output should be (n_seqs, seq_length, n_channels)
+    logits_initializer = tf.keras.initializers.GlorotUniform(seed=init_seed)
     logits_embedding = layers.Embedding(
         1,
         n_seqs * seq_length * n_channels,
-        embeddings_initializer='glorot_uniform',
+        embeddings_initializer=logits_initializer,
         name='logits_embedding',
     )
     logits_flat = logits_embedding(dummy_input)
