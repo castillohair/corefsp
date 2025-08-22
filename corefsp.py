@@ -8,12 +8,31 @@ from tensorflow.keras import models
 # Versions should comply with PEP440.  For a discussion on single-sourcing
 # the version across setup.py and the project code, see
 # https://packaging.python.org/en/latest/single_source_version.html
-__version__ = '0.1.0'
+__version__ = '0.2.0'
 
 
 ###########
 # Callbacks
 ###########
+
+class EarlyBatchStopping(tf.keras.callbacks.Callback):
+    def __init__(self, min_delta=0, min_batch=100):
+        super(tf.keras.callbacks.Callback, self).__init__()
+        self.min_delta = min_delta
+        self.min_batch = min_batch
+        self.best_loss = np.Inf
+        self.wait = 0
+
+    def on_batch_end(self, batch, logs=None):
+        current_loss = logs.get('loss')
+        if np.less(current_loss + self.min_delta, self.best_loss):
+            self.best_loss = current_loss
+            self.wait = 0
+        else:
+            self.wait += 1
+            if self.wait >= self.min_batch:
+                self.model.stop_training = True
+                print(f"\nEarly stopping at batch {batch+1}")
 
 class LossHistory(tf.keras.callbacks.Callback):
     def __init__(self):
@@ -24,6 +43,7 @@ class LossHistory(tf.keras.callbacks.Callback):
         self.loss = []
         self.target_loss = []
         self.pwm_loss = []
+        self.one_hot_loss = []
         self.entropy_loss = []
 
     def on_train_begin(self, logs=None):
@@ -33,6 +53,7 @@ class LossHistory(tf.keras.callbacks.Callback):
         self.loss.append(logs.get('loss'))
         self.target_loss.append(logs.get('target_loss'))
         self.pwm_loss.append(logs.get('pwm_loss'))
+        self.one_hot_loss.append(logs.get('one_hot_loss'))
         self.entropy_loss.append(logs.get('entropy_loss'))
 
 class SequenceRecorder(tf.keras.callbacks.Callback):
@@ -117,11 +138,16 @@ def design_seqs(
         target_weight=1,
         pwm_loss_func=None,
         pwm_weight=1,
+        one_hot_loss_func=None,
+        one_hot_weight=1,
         entropy_weight=1,
         learning_rate=0.1,
         n_iter_max=2000,
         seq_record_filename=None,
         seq_record_batches=100,
+        early_stopping=False,
+        early_stopping_min_delta=0.1,
+        early_stopping_min_batch=500,
         init_seed=None,
     ):
     """
@@ -194,6 +220,14 @@ def design_seqs(
     get_pwm_loss = layers.Lambda(lambda x: pwm_loss_func(x), name='pwm')
     pwm_loss = get_pwm_loss(pwm)
 
+    # PWM sample loss
+    if one_hot_loss_func is None:
+        def one_hot_loss_func(pwm_sample):
+            return pwm_sample*0
+    
+    get_one_hot_loss = layers.Lambda(lambda x: one_hot_loss_func(x), name='one_hot')
+    one_hot_loss = get_one_hot_loss(sampled_pwm)
+
     # Entropy loss
     def entropy_loss_func(pwm):
         """Loss that returns the mean entropy of the batch"""
@@ -213,7 +247,7 @@ def design_seqs(
     # Define loss model
     loss_model = models.Model(
         [dummy_input],
-        [target_loss, pwm_loss, entropy_loss],
+        [target_loss, pwm_loss, one_hot_loss, entropy_loss],
     )
 
     # Compile loss model
@@ -228,6 +262,7 @@ def design_seqs(
         loss={
             'target': get_weighted_loss(loss_coeff=target_weight),
             'pwm': get_weighted_loss(loss_coeff=pwm_weight),
+            'one_hot': get_weighted_loss(loss_coeff=one_hot_weight),
             'entropy': get_weighted_loss(loss_coeff=entropy_weight),
         }
     )
@@ -235,12 +270,14 @@ def design_seqs(
     # loss_model.summary()
 
     # # Callbacks
-    # early_stopping_callback = EarlyBatchStopping(
-    #     min_delta=min_delta_loss_stop,
-    #     min_batch=n_iter_min,
-    # )
     loss_history_callback = LossHistory()
     callbacks = [loss_history_callback]
+    if early_stopping:
+        early_stopping_callback = EarlyBatchStopping(
+            min_delta=early_stopping_min_delta,
+            min_batch=early_stopping_min_batch,
+        )
+        callbacks.append(early_stopping_callback)
 
     if seq_record_filename is not None:
         seq_recorder_callback = SequenceRecorder(loss_model, seq_record_filename, seq_record_batches)
@@ -249,7 +286,7 @@ def design_seqs(
     # Fit
     _ = loss_model.fit(
         [0]*n_iter_max,
-        [[0, 0, 0]]*n_iter_max,
+        [[0, 0, 0, 0]]*n_iter_max,
         epochs=1,
         batch_size=1,
         callbacks=callbacks,
@@ -267,6 +304,10 @@ def design_seqs(
         train_history['pwm_loss'] = np.array(loss_history_callback.pwm_loss) / pwm_weight
     else:
         train_history['pwm_loss'] = np.array(loss_history_callback.pwm_loss)
+    if one_hot_weight != 0:
+        train_history['one_hot_loss'] = np.array(loss_history_callback.one_hot_loss) / one_hot_weight
+    else:
+        train_history['one_hot_loss'] = np.array(loss_history_callback.one_hot_loss)
     if entropy_weight != 0:
         train_history['entropy_loss'] = np.array(loss_history_callback.entropy_loss) / entropy_weight
     else:
