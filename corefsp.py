@@ -16,8 +16,9 @@ __version__ = '0.2.0'
 ###########
 
 class EarlyBatchStopping(tf.keras.callbacks.Callback):
-    def __init__(self, min_delta=0, min_batch=100):
+    def __init__(self, mode='abs', min_delta=0, min_batch=100):
         super(tf.keras.callbacks.Callback, self).__init__()
+        self.mode = mode
         self.min_delta = min_delta
         self.min_batch = min_batch
         self.best_loss = np.Inf
@@ -25,14 +26,24 @@ class EarlyBatchStopping(tf.keras.callbacks.Callback):
 
     def on_batch_end(self, batch, logs=None):
         current_loss = logs.get('loss')
-        if np.less(current_loss + self.min_delta, self.best_loss):
-            self.best_loss = current_loss
-            self.wait = 0
-        else:
-            self.wait += 1
-            if self.wait >= self.min_batch:
-                self.model.stop_training = True
-                print(f"\nEarly stopping at batch {batch+1}")
+        if self.mode=='abs':
+            if np.less(current_loss + self.min_delta, self.best_loss):
+                self.best_loss = current_loss
+                self.wait = 0
+            else:
+                self.wait += 1
+                if self.wait >= self.min_batch:
+                    self.model.stop_training = True
+                    print(f"\nEarly stopping at batch {batch+1}")
+        elif self.mode=='rel':
+            if (current_loss > 0) or (self.best_loss - current_loss > self.min_delta*np.abs(current_loss)):
+                self.best_loss = current_loss
+                self.wait = 0
+            else:
+                self.wait += 1
+                if self.wait >= self.min_batch:
+                    self.model.stop_training = True
+                    print(f"\nEarly stopping at batch {batch+1}")
 
 class LossHistory(tf.keras.callbacks.Callback):
     def __init__(self):
@@ -146,6 +157,7 @@ def design_seqs(
         seq_record_filename=None,
         seq_record_batches=100,
         early_stopping=False,
+        early_stopping_mode='abs',
         early_stopping_min_delta=0.1,
         early_stopping_min_batch=500,
         init_seed=None,
@@ -274,6 +286,7 @@ def design_seqs(
     callbacks = [loss_history_callback]
     if early_stopping:
         early_stopping_callback = EarlyBatchStopping(
+            mode=early_stopping_mode,
             min_delta=early_stopping_min_delta,
             min_batch=early_stopping_min_batch,
         )
